@@ -18,15 +18,34 @@ module.exports = function(grunt) {
   grunt.util = grunt.util || grunt.utils;
 
   var withTscCommand = function (cmdpath, cb) {
-    var cmd = cmdpath || 'tsc';
-    grunt.util.spawn({'cmd': cmd}, function (error) {
-      if (error) {
-        grunt.fatal(cmd + ' cannot be run. Try ' + 'npm install -g typescript'.cyan);
-      }
-      else {
-        cb(cmd);
-      }
-    });
+    cmdpath = cmdpath || 'tsc';
+      var cmd = parseCmd(cmdpath);
+      cmd.args = cmd.args.concat('--version');
+    cb(cmdpath);
+
+      // check for a working tsc configuration
+//    grunt.util.spawn(cmd, function (error) {
+//      if (error) {
+//        grunt.fatal((error.message ? error.message + '. ' : '') + cmd + ' cannot be run. Try ' + 'npm install -g typescript'.cyan);
+//      }
+//      else {
+//        cb(cmdpath);
+//      }
+//    });
+  };
+
+  /**
+   * Split the given command path into executable and arguments
+   * @param cmdpath
+   * @returns {Object} a command object holding the path to the executable (as string) and an args (as array)
+   */
+  var parseCmd = function(cmdpath) {
+    var cmd = cmdpath.split(' ');
+    cmd = {
+      cmd: cmd.shift(),
+      args: cmd
+    }
+    return cmd;
   };
 
   var cmdToString = function (cmd) {
@@ -67,15 +86,9 @@ module.exports = function(grunt) {
   };
 
   var compile = function (tscpath, srcs, trg, options, cb) {
-    if (srcs.length === 1) {
-      compileOneToOne(tscpath, srcs[0], trg, options, cb);
-    }
-    else if (srcs.length > 1) {
-      compileManyToOne(tscpath, srcs, trg, options, cb);
-    }
-    else {
-      cb();
-    }
+    // always use manyToOne since we use one file as entry point that compiles to a different name
+    // todo - look into that
+    compileManyToOne(tscpath, srcs, trg, options, cb);
   };
 
   var tmpPath = function (filepath) {
@@ -102,11 +115,12 @@ module.exports = function(grunt) {
 
   var checkCompilerOutput = function (trg, error, result, success) {
     if (error) {
-      grunt.warn(result.stderr);
-      grunt.warn(result.stdout);
+      grunt.warn(error);
+//      grunt.warn(result.stdout);
+//      grunt.warn(result.stderr);
     }
     else {
-      grunt.log.write(trg + "...");
+      //grunt.log.write(trg + "...");
       grunt.log.ok();
       if (grunt.util._.isFunction(success)) {
         success();
@@ -115,10 +129,8 @@ module.exports = function(grunt) {
   };
 
   var compileOneToOne = function (tscpath, src, trg, options, cb) {
-    var cmd = {
-      cmd : tscpath,
-      args : [src]
-    };
+    var cmd = parseCmd(tscpath);
+    cmd.args = cmd.args.concat(src);
     cmd.args.push.apply(cmd.args, optsToTscArgs(options));
     grunt.verbose.writeln(cmdToString(cmd));
 
@@ -142,17 +154,34 @@ module.exports = function(grunt) {
   };
 
   var compileManyToOne = function (tscpath, srcs, trg, options, cb) {
-    var cmd = {
-      cmd : tscpath,
-      args : ['--out', trg]
-    };
+    var cmd = parseCmd(tscpath);
+    cmd.args = cmd.args.concat('--out', trg);
     cmd.args.push.apply(cmd.args, srcs);
     cmd.args.push.apply(cmd.args, optsToTscArgs(options));
     grunt.verbose.writeln(cmdToString(cmd));
-    grunt.util.spawn(cmd, function (error, result) {
+    grunt.log.write('Compiling to "' + trg + '"...');
+
+    var child = grunt.util.spawn(cmd, function (error, result) {
       checkCompilerOutput(trg, error, result);
       cb();
     });
+
+    if (child.stdout) {
+      child.stdout.on('data', function(buf) {
+        grunt.verbose.write(buf.toString('ascii'));
+      });
+    }
+    if (child.stderr) {
+      var hasErrors = false;
+      child.stderr.on('data', function(buf) {
+        if(!hasErrors) {
+          grunt.log.error();
+          grunt.log.writeln('Note: The compilation process is still running.');
+        }
+        hasErrors = true;
+        grunt.log.write(buf.toString('ascii'));
+      });
+    }
   };
 
   grunt.registerMultiTask('type', 'Compile TypeScript files to JavaScript', function() {
@@ -184,7 +213,8 @@ module.exports = function(grunt) {
     // Compute compiler pases
     var files = grunt.util._.map(this.files, function (file) {
       var dest = path.normalize(file.dest);
-      var srcs = grunt.file.expandFiles(file.src);
+      // was: expandFiles (grunt 0.3?)
+      var srcs = grunt.file.expand(file.src);
       if (isMultiTarget(dest)) {
         var basePath = helpers.findBasePath(srcs, options.basePath);
         return grunt.util._.map(srcs, function (src) {
